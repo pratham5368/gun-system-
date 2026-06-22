@@ -1,0 +1,628 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+
+local player = Players.LocalPlayer
+
+local playerGui = player:WaitForChild("PlayerGui")
+local ammoGui = playerGui:WaitForChild("AmmoGui")
+local ammoText = ammoGui:WaitForChild("AmmoText")
+local shootButton = ammoGui:WaitForChild("ShootButton")
+local fireModeFrame = ammoGui:WaitForChild("FireModeFrame")
+local fireModeButton = fireModeFrame:WaitForChild("FireModeButton")
+local crosshair = ammoGui:FindFirstChild("Crosshair")
+
+if crosshair then
+	crosshair.AnchorPoint = Vector2.new(0.5, 0.5)
+	crosshair.Position = UDim2.new(0.5, 0, 0.5, 0)
+end
+
+local tool = script.Parent
+local handle = tool:WaitForChild("Handle")
+local shootSound = handle:WaitForChild("FireSound")
+local reloadSound = handle:WaitForChild("Reload")
+local emptySound = handle:WaitForChild("Tick")
+local equipSound = handle:WaitForChild("EquipSound")
+local unequipSound = handle:WaitForChild("UnequipSound")
+
+local gunSystem = ReplicatedStorage:WaitForChild("GunSystem")
+local Gun = require(gunSystem:WaitForChild("Gun"))
+local gunRemote = gunSystem:WaitForChild("GunRemote")
+local hitRemote = gunSystem:WaitForChild("HitRemote")
+
+local pistol = Gun.new({
+	Name = "Pistol",
+	Damage = 20,
+	MaxAmmo = 12,
+	FireRate = 0.3,
+	ReloadTime = 1.5,
+	Range = 300,
+	RecoilUp = 0.04,
+	RecoilSide = 0.02,
+	RecoilRecovery = 0.18,
+})
+
+local equipped = false
+local holdingShoot = false
+local fireMode = "Semi"
+local isBursting = false
+local cursorMode = false
+local cameraConnection = nil
+
+local oldMouseBehavior = nil
+local oldMouseIconEnabled = nil
+local oldCameraMinZoom = nil
+local oldCameraMaxZoom = nil
+
+local SHOULDER_OFFSET = Vector3.new(1, 1, 1)
+local CAMERA_DISTANCE = 5
+local NORMAL_FOV = 70
+
+local ADS_SHOULDER_OFFSET = Vector3.new(0.5, 1.8, -1)
+local ADS_CAMERA_DISTANCE = 5
+local ADS_FOV = 50
+
+local isADS = false
+local currentOffset = SHOULDER_OFFSET
+
+local recoilOffset = Vector2.new(0, 0)
+local targetRecoilOffset = Vector2.new(0, 0)
+
+local recoilRoll = 0
+local targetRecoilRoll = 0
+
+local recoilKick = 0
+local targetRecoilKick = 0
+
+-- Sway
+local swayOffset = Vector2.new(0, 0)
+local targetSwayOffset = Vector2.new(0, 0)
+local SWAY_AMOUNT = 0.012
+local SWAY_SMOOTHING = 0.08
+
+-- Bobbing
+local bobTimer = 0
+local bobOffset = Vector3.new(0, 0, 0)
+local BOB_SPEED = 10
+local BOB_AMOUNT_Y = 0.018
+local BOB_AMOUNT_X = 0.009
+
+local currentDistance = CAMERA_DISTANCE
+local currentFOV = NORMAL_FOV
+
+local getAimPosition
+local getAimRay
+
+local crosshairSpread = 0
+local targetCrosshairSpread = 0
+local BASE_CROSSHAIR_SIZE = 20
+local MAX_SPREAD = 40
+
+local hitMarker = nil
+
+local function showHitMarker(isPlayer)
+	if not crosshair then return end
+
+	if hitMarker then
+		hitMarker:Destroy()
+		hitMarker = nil
+	end
+
+	hitMarker = Instance.new("TextLabel")
+	hitMarker.Size = UDim2.new(0, 20, 0, 20)
+	hitMarker.AnchorPoint = Vector2.new(0.5, 0.5)
+	hitMarker.Position = UDim2.new(0.5, 0, 0.5, 0)
+	hitMarker.BackgroundTransparency = 1
+	hitMarker.Text = "✦"
+	hitMarker.TextScaled = true
+	hitMarker.Font = Enum.Font.GothamBold
+	hitMarker.TextColor3 = isPlayer
+		and Color3.fromRGB(220, 50, 50)
+		or Color3.fromRGB(255, 255, 255)
+	hitMarker.ZIndex = 10
+	hitMarker.Parent = ammoGui
+
+	task.delay(0.1, function()
+		if hitMarker then
+			hitMarker:Destroy()
+			hitMarker = nil
+		end
+	end)
+end
+
+local function pulseCrosshair(isPlayer)
+	if not crosshair then return end
+	local originalColor = crosshair.ImageColor3
+	crosshair.ImageColor3 = isPlayer
+		and Color3.fromRGB(220, 50, 50)
+		or Color3.fromRGB(255, 255, 255)
+	task.delay(0.1, function()
+		if crosshair then
+			crosshair.ImageColor3 = originalColor
+		end
+	end)
+end
+
+local function doMuzzleFlash(muzzle)
+	local light = Instance.new("PointLight")
+	light.Brightness = 3
+	light.Range = 6
+	light.Color = Color3.fromRGB(255, 200, 80)
+	light.Parent = muzzle
+
+	local flash = Instance.new("Part")
+	flash.Anchored = true
+	flash.CanCollide = false
+	flash.CastShadow = false
+	flash.Material = Enum.Material.Neon
+	flash.Color = Color3.fromRGB(255, 220, 100)
+	flash.Size = Vector3.new(0.08, 0.08, 0.08)
+	flash.Shape = Enum.PartType.Ball
+	flash.CFrame = muzzle.WorldCFrame
+	flash.Parent = workspace
+
+	task.delay(0.05, function()
+		light:Destroy()
+		flash:Destroy()
+	end)
+end
+
+local fireModes = { "Semi", "Auto", "Burst" }
+local fireModeIndex = 1
+
+local function updateModeUI()
+	fireModeButton.Text = fireMode
+
+	if fireMode == "Semi" then
+		fireModeButton.BackgroundColor3 = Color3.fromRGB(50, 130, 220)
+	elseif fireMode == "Auto" then
+		fireModeButton.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
+	elseif fireMode == "Burst" then
+		fireModeButton.BackgroundColor3 = Color3.fromRGB(220, 160, 30)
+	end
+end
+
+local function cycleFireMode()
+	fireModeIndex = fireModeIndex % #fireModes + 1
+	fireMode = fireModes[fireModeIndex]
+	updateModeUI()
+end
+
+local function setMouseLock(locked)
+	UserInputService.MouseBehavior = locked
+		and Enum.MouseBehavior.LockCenter
+		or Enum.MouseBehavior.Default
+	UserInputService.MouseIconEnabled = not locked
+end
+
+local function setCursorMode(enabled)
+	cursorMode = enabled
+	setMouseLock(not enabled)
+end
+
+local function updateAmmo()
+	ammoText.Text = pistol.Ammo .. " / " .. pistol.MaxAmmo
+end
+
+local function getCharacter()
+	return player.Character
+end
+
+local function getHumanoid()
+	local character = getCharacter()
+	if not character then return nil end
+	return character:FindFirstChildOfClass("Humanoid")
+end
+
+local function getRootPart()
+	local character = getCharacter()
+	if not character then return nil end
+	return character:FindFirstChild("HumanoidRootPart")
+end
+
+local function getRightShoulder()
+	local character = getCharacter()
+	if not character then return nil end
+
+	local upperTorso = character:FindFirstChild("UpperTorso")
+	if upperTorso then
+		return upperTorso:FindFirstChild("RightShoulder")
+	end
+
+	local torso = character:FindFirstChild("Torso")
+	if torso then
+		return torso:FindFirstChild("Right Shoulder")
+	end
+
+	return nil
+end
+
+local function resetRightShoulder()
+	local rightShoulder = getRightShoulder()
+	if rightShoulder then
+		rightShoulder.Transform = CFrame.new()
+	end
+end
+
+local function setCharacterTransparency(transparency)
+	local character = getCharacter()
+	if not character then return end
+
+	local hideParts = { "Head", "UpperTorso", "RightUpperArm", "LeftUpperArm" }
+
+	for _, partName in ipairs(hideParts) do
+		local part = character:FindFirstChild(partName)
+		if part then
+			part.LocalTransparencyModifier = transparency
+		end
+	end
+end
+
+local function aimArmAtCrosshair()
+	if not getAimPosition then return end
+
+	local character = getCharacter()
+	local rootPart = getRootPart()
+	local rightShoulder = getRightShoulder()
+	local targetPosition = getAimPosition()
+
+	if not character or not rootPart or not rightShoulder or not targetPosition then return end
+
+	local rightUpperArm = character:FindFirstChild("RightUpperArm")
+	local rightArm = character:FindFirstChild("Right Arm")
+
+	local armPart = rightUpperArm or rightArm
+	if not armPart then return end
+
+	local aimDirection = targetPosition - armPart.Position
+	if aimDirection.Magnitude <= 0 then return end
+
+	aimDirection = aimDirection.Unit
+
+	local localDirection = rootPart.CFrame:VectorToObjectSpace(aimDirection)
+
+	local pitch = math.asin(math.clamp(localDirection.Y, -1, 1))
+	local yaw = math.atan2(-localDirection.X, -localDirection.Z)
+
+	pitch = math.clamp(pitch, math.rad(-60), math.rad(60))
+	yaw = math.clamp(yaw, math.rad(-35), math.rad(35))
+
+	rightShoulder.Transform = CFrame.Angles(pitch, yaw, 0)
+end
+
+local function enableShoulderCamera()
+	local humanoid = getHumanoid()
+	if not humanoid then return end
+
+	oldMouseBehavior = UserInputService.MouseBehavior
+	oldMouseIconEnabled = UserInputService.MouseIconEnabled
+	oldCameraMinZoom = player.CameraMinZoomDistance
+	oldCameraMaxZoom = player.CameraMaxZoomDistance
+
+	setMouseLock(true)
+
+	player.CameraMinZoomDistance = CAMERA_DISTANCE
+	player.CameraMaxZoomDistance = CAMERA_DISTANCE
+
+	humanoid.CameraOffset = SHOULDER_OFFSET
+	humanoid.AutoRotate = false
+
+	cameraConnection = RunService.RenderStepped:Connect(function(deltaTime)
+		local rootPart = getRootPart()
+		local camera = workspace.CurrentCamera
+		local humanoid = getHumanoid()
+
+		if not rootPart or not camera or not humanoid then return end
+		
+		local delta = UserInputService:GetMouseDelta()
+		targetSwayOffset = Vector2.new(
+			math.clamp(-delta.X * SWAY_AMOUNT, -0.08, 0.08),
+			math.clamp(-delta.Y * SWAY_AMOUNT, -0.06, 0.06)
+		)
+		swayOffset = swayOffset + (targetSwayOffset - swayOffset) * SWAY_SMOOTHING
+
+		local isMoving = humanoid.MoveDirection.Magnitude > 0.1
+		local isGrounded = humanoid:GetState() == Enum.HumanoidStateType.Running
+
+		if isMoving and isGrounded and not isADS then
+			bobTimer = bobTimer + deltaTime * BOB_SPEED
+		else
+			bobTimer = bobTimer + (0 - bobTimer) * 0.1
+		end
+
+		bobOffset = Vector3.new(
+			math.sin(bobTimer) * BOB_AMOUNT_X,
+			math.abs(math.sin(bobTimer)) * BOB_AMOUNT_Y,
+			0
+		)
+
+		local lookVector = camera.CFrame.LookVector
+		local flatLook = Vector3.new(lookVector.X, 0, lookVector.Z)
+
+		if flatLook.Magnitude > 0 then
+			rootPart.CFrame = CFrame.lookAt(rootPart.Position, rootPart.Position + flatLook)
+		end
+
+		local targetOffset = isADS and ADS_SHOULDER_OFFSET or SHOULDER_OFFSET
+		local targetDistance = isADS and ADS_CAMERA_DISTANCE or CAMERA_DISTANCE
+		local targetFOV = isADS and ADS_FOV or NORMAL_FOV
+		local speed = 0.2
+
+		currentOffset = currentOffset:Lerp(targetOffset, speed)
+		currentDistance = currentDistance + (targetDistance - currentDistance) * speed
+		currentFOV = currentFOV + (targetFOV - currentFOV) * speed
+
+		humanoid.CameraOffset = currentOffset
+		player.CameraMinZoomDistance = currentDistance
+		player.CameraMaxZoomDistance = currentDistance
+		camera.FieldOfView = currentFOV
+
+		setCharacterTransparency(isADS and 1 or 0)
+		aimArmAtCrosshair()
+
+		-- crosshair spread
+		local spreadTarget = isADS and 0 or targetCrosshairSpread
+		targetCrosshairSpread = targetCrosshairSpread + (0 - targetCrosshairSpread) * 0.1
+		crosshairSpread = crosshairSpread + (spreadTarget - crosshairSpread) * 0.2
+
+		if crosshair then
+			local size = BASE_CROSSHAIR_SIZE + crosshairSpread
+			crosshair.Size = UDim2.new(0, size, 0, size)
+		end
+
+		targetRecoilOffset = targetRecoilOffset
+			+ (Vector2.new(0, 0) - targetRecoilOffset) * pistol.RecoilRecovery
+
+		recoilOffset = recoilOffset + (targetRecoilOffset - recoilOffset) * 0.75
+
+		targetRecoilRoll = targetRecoilRoll + (0 - targetRecoilRoll) * pistol.RecoilRecovery
+		recoilRoll = recoilRoll + (targetRecoilRoll - recoilRoll) * 0.75
+
+		targetRecoilKick = targetRecoilKick + (0 - targetRecoilKick) * 0.2
+		recoilKick = recoilKick + (targetRecoilKick - recoilKick) * 0.75
+
+		camera.CFrame = camera.CFrame
+			* CFrame.new(bobOffset.X, bobOffset.Y, recoilKick)
+			* CFrame.Angles(-recoilOffset.X + swayOffset.Y, recoilOffset.Y + swayOffset.X, recoilRoll + swayOffset.X * 0.5)
+	end)
+end
+
+local function disableShoulderCamera()
+	if cameraConnection then
+		cameraConnection:Disconnect()
+		cameraConnection = nil
+	end
+
+	resetRightShoulder()
+	setCharacterTransparency(0)
+
+	local humanoid = getHumanoid()
+	if humanoid then
+		humanoid.CameraOffset = Vector3.new(0, 0, 0)
+		humanoid.AutoRotate = true
+	end
+
+	if oldMouseBehavior then
+		UserInputService.MouseBehavior = oldMouseBehavior
+	end
+
+	if oldMouseIconEnabled ~= nil then
+		UserInputService.MouseIconEnabled = oldMouseIconEnabled
+	end
+
+	if oldCameraMinZoom then
+		player.CameraMinZoomDistance = oldCameraMinZoom
+	end
+
+	if oldCameraMaxZoom then
+		player.CameraMaxZoomDistance = oldCameraMaxZoom
+	end
+end
+
+getAimRay = function()
+	local camera = workspace.CurrentCamera
+	local viewportSize = camera.ViewportSize
+	return camera:ViewportPointToRay(viewportSize.X / 2, viewportSize.Y / 2)
+end
+
+getAimPosition = function()
+	local ray = getAimRay()
+
+	local raycastParams = RaycastParams.new()
+	raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+	raycastParams.IgnoreWater = true
+
+	if player.Character then
+		raycastParams.FilterDescendantsInstances = { player.Character }
+	end
+
+	local result = workspace:Raycast(ray.Origin, ray.Direction * pistol.Range, raycastParams)
+	return result and result.Position or (ray.Origin + ray.Direction * pistol.Range)
+end
+
+local function doShot(isBurst)
+	if not equipped then return end
+	if cursorMode then return end
+
+	if isBurst then
+		pistol.LastShotTime = 0
+	end
+
+	local didShoot = pistol:Shoot()
+	if not didShoot then
+		if pistol.Ammo <= 0 and not pistol.Reloading then
+			emptySound:Play()
+		end
+		return
+	end
+
+	local muzzle = tool.Handle:FindFirstChild("Muzzle")
+	local muzzleOrigin = muzzle and muzzle.WorldPosition or tool.Handle.Position
+
+	if muzzle then doMuzzleFlash(muzzle) end
+	shootSound:Play()
+
+	local aimRay = getAimRay()
+	local aimOrigin = aimRay.Origin
+	local aimDirection = aimRay.Direction
+
+	local action = isBurst and "BurstShoot" or "Shoot"
+	gunRemote:FireServer(action, "Pistol", muzzleOrigin, aimOrigin, aimDirection)
+
+	local recoilMultiplier = isADS and 0.4 or 1
+	local sidekick = (math.random() * 2 - 1) * pistol.RecoilSide * recoilMultiplier
+	targetRecoilOffset = targetRecoilOffset + Vector2.new(
+		pistol.RecoilUp * recoilMultiplier,
+		sidekick
+	)
+	targetRecoilRoll = targetRecoilRoll + sidekick * 0.4
+	targetRecoilKick = targetRecoilKick + 0.3
+
+	targetCrosshairSpread = math.min(targetCrosshairSpread + 8, MAX_SPREAD)
+
+	updateAmmo()
+end
+
+local function shootGun()
+	doShot(false)
+end
+
+local function shootBurst()
+	if isBursting then return end
+	if cursorMode then return end
+	isBursting = true
+
+	for i = 1, 3 do
+		doShot(true)
+		if i < 3 then
+			task.wait(0.08)
+		end
+	end
+
+	isBursting = false
+end
+
+local function startShooting()
+	if holdingShoot then return end
+	holdingShoot = true
+
+	while holdingShoot do
+		shootGun()
+		task.wait(pistol.FireRate)
+	end
+end
+
+local function stopShooting()
+	holdingShoot = false
+end
+
+updateAmmo()
+ammoGui.Enabled = false
+shootButton.Visible = UserInputService.TouchEnabled
+
+if crosshair then
+	crosshair.Visible = false
+end
+
+fireModeButton.MouseButton1Click:Connect(function()
+	cycleFireMode()
+end)
+
+updateModeUI()
+
+hitRemote.OnClientEvent:Connect(function(hitType, isHeadshot)
+	if hitType == "None" then return end
+
+	local isPlayer = hitType == "Player"
+	showHitMarker(isPlayer)
+	pulseCrosshair(isPlayer)
+end)
+
+tool.Equipped:Connect(function()
+	equipped = true
+	equipSound:Play()
+	ammoGui.Enabled = true
+	shootButton.Visible = UserInputService.TouchEnabled
+
+	if crosshair then
+		crosshair.Visible = true
+	end
+
+	enableShoulderCamera()
+	updateAmmo()
+end)
+
+tool.Unequipped:Connect(function()
+	equipped = false
+	unequipSound:Play()
+	holdingShoot = false
+	isADS = false
+	cursorMode = false
+	ammoGui.Enabled = false
+
+	if crosshair then
+		crosshair.Visible = false
+	end
+
+	disableShoulderCamera()
+	workspace.CurrentCamera.FieldOfView = NORMAL_FOV
+end)
+
+tool.Activated:Connect(function()
+	if cursorMode then return end
+	if fireMode == "Semi" then
+		shootGun()
+	elseif fireMode == "Burst" then
+		shootBurst()
+	end
+end)
+
+shootButton.MouseButton1Down:Connect(function()
+	startShooting()
+end)
+
+shootButton.MouseButton1Up:Connect(function()
+	stopShooting()
+end)
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if gameProcessed then return end
+	if not equipped then return end
+
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		if not cursorMode and fireMode == "Auto" then
+			startShooting()
+		end
+	end
+
+	if input.UserInputType == Enum.UserInputType.MouseButton2 then
+		setCursorMode(not cursorMode)
+	end
+
+	if input.KeyCode == Enum.KeyCode.F then
+		isADS = true
+	end
+
+	if input.KeyCode == Enum.KeyCode.R then
+		if not pistol:CanReload() then return end
+
+		ammoText.Text = "Reloading..."
+		reloadSound:Play()
+		gunRemote:FireServer("Reload", "Pistol")
+		pistol:Reload()
+		updateAmmo()
+	end
+end)
+
+UserInputService.InputEnded:Connect(function(input, gameProcessed)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		if not cursorMode and fireMode == "Auto" then
+			stopShooting()
+		end
+	end
+
+	if input.KeyCode == Enum.KeyCode.F then
+		isADS = false
+	end
+end)
