@@ -1,5 +1,3 @@
--- GunSystem/Gun.lua
--- Tracks per-player, per-gun state with full ammo, fire rate, and reload logic.
 
 local Gun = {}
 Gun.__index = Gun
@@ -32,7 +30,7 @@ function Gun:Shoot()
 	return true
 end
 
--- Server calls this before ReloadTime expires; client-side tracks separately.
+
 function Gun:Reload()
 	if self.IsReloading then return end
 	if self.Ammo == self.Config.MaxAmmo then return end
@@ -66,7 +64,7 @@ function Gun:CalcDamage(distance)
 end
 
 function Gun:GetRecoil()
-	-- Recoil ramps up slightly with sustained fire, resets after reload
+	
 	local ramp = 1 + math.min(self.ShotCount * 0.04, 0.6)
 	return {
 		Up   = self.Config.RecoilUp   * ramp,
