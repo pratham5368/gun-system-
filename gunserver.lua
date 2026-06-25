@@ -1,4 +1,4 @@
--- GunSystem/GunServer.lua (Script inside GunSystem, RunContext = Server)
+
 
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -9,17 +9,15 @@ local GunModule  = require(gunSystem:WaitForChild("Gun"))
 local GunConfig  = require(gunSystem:WaitForChild("GunConfig"))
 local gunRemote  = gunSystem:WaitForChild("GunRemote")
 local hitRemote  = gunSystem:WaitForChild("HitRemote")
-local fxRemote   = gunSystem:WaitForChild("FXRemote")    -- new: broadcast FX to all clients
-local killRemote = gunSystem:WaitForChild("KillRemote")  -- new: kill-feed broadcasts
+local fxRemote   = gunSystem:WaitForChild("FXRemote")    
+local killRemote = gunSystem:WaitForChild("KillRemote")  
 
--- ── State ────────────────────────────────────────────────────────────────────
 local guns = {}          -- [player][gunName] = Gun instance
 local shotLog = {}       -- [player] = { times } for anti-cheat rate limiting
 
-local MAX_SHOTS_PER_SECOND = 20  -- server-side cap regardless of gun
-local MAX_AIM_ANGLE = 45         -- degrees between claimed aimDir and actual head direction
+local MAX_SHOTS_PER_SECOND = 20  
+local MAX_AIM_ANGLE = 45         
 
--- ── Helpers ──────────────────────────────────────────────────────────────────
 local function getGun(player, gunName)
 	guns[player] = guns[player] or {}
 	if not guns[player][gunName] then
@@ -41,7 +39,7 @@ local function getCharacterFromHit(part)
 	return nil, nil
 end
 
--- Rate-limit check: returns true if this shot is suspicious
+
 local function isRateLimited(player)
 	local now = os.clock()
 	shotLog[player] = shotLog[player] or {}
@@ -58,7 +56,7 @@ local function isRateLimited(player)
 	return false
 end
 
--- Validate aim direction isn't wildly wrong (basic anti-aimbot)
+
 local function isValidAimDirection(player, aimDirection)
 	local char = player.Character
 	if not char then return false end
@@ -66,11 +64,9 @@ local function isValidAimDirection(player, aimDirection)
 	if not hrp then return false end
 	local playerForward = hrp.CFrame.LookVector
 	local dot = playerForward:Dot(aimDirection.Unit)
-	-- dot of 0 = 90 degrees off, -1 = shooting behind. Allow wide angle.
-	return dot > -0.5  -- reject only if literally shooting behind themselves
+	return dot > -0.5  
 end
 
--- Apply random spread to a direction vector
 local function applySpread(direction, spreadRadians)
 	if spreadRadians <= 0 then return direction end
 	local yaw   = (math.random() - 0.5) * 2 * spreadRadians
@@ -80,10 +76,10 @@ local function applySpread(direction, spreadRadians)
 	return cf.LookVector
 end
 
--- ── Core shot logic ───────────────────────────────────────────────────────────
+
 local function processPellet(player, gun, muzzleOrigin, direction, rayParams)
 	local cfg = gun.Config
-	local results = {}    -- collect all hit results for penetration
+	local results = {}    
 
 	local origin = muzzleOrigin
 	local remaining = cfg.Penetration + 1  -- +1 for the initial shot
@@ -117,7 +113,6 @@ local function processPellet(player, gun, muzzleOrigin, direction, rayParams)
 			end
 		else
 			hitType = "Object"
-			-- Place a hit decal on surfaces (broadcast to all clients)
 			fxRemote:FireAllClients("BulletHole", result.Position, result.Normal, cfg.HitDecal)
 		end
 
@@ -129,12 +124,11 @@ local function processPellet(player, gun, muzzleOrigin, direction, rayParams)
 			instance = result.Instance,
 		})
 
-		-- For penetration: offset origin just past the hit surface and continue
+
 		remaining -= 1
 		if remaining > 0 then
 			origin = result.Position + direction * 0.1
-			-- Only penetrate thin, non-character parts
-			if hitChar then break end  -- don't penetrate players
+			if hitChar then break end  
 		end
 	end
 
@@ -158,7 +152,7 @@ local function performShot(player, gun, muzzleOrigin, aimOrigin, aimDirection)
 	rayParams.FilterType  = Enum.RaycastFilterType.Exclude
 	rayParams.IgnoreWater = true
 
-	-- Camera-space raycast to find true target point
+
 	local camResult   = workspace:Raycast(aimOrigin, aimDirection * gun.Config.Range, rayParams)
 	local targetPos   = camResult and camResult.Position or (aimOrigin + aimDirection * gun.Config.Range)
 
@@ -166,13 +160,12 @@ local function performShot(player, gun, muzzleOrigin, aimOrigin, aimDirection)
 	local isHeadshot    = false
 	local hitPosition   = targetPos
 
-	-- Fire each pellet (1 for most guns, 7 for shotgun)
+	
 	for _ = 1, gun.Config.PelletsPerShot do
 		local spread       = gun:GetSpread()
 		local trueDir      = applySpread((targetPos - muzzleOrigin).Unit, spread)
 		local pelletResults = processPellet(player, gun, muzzleOrigin, trueDir, rayParams)
 
-		-- Use the first meaningful hit for the client feedback
 		if #pelletResults > 0 then
 			local first = pelletResults[1]
 			hitPosition = first.position
@@ -184,17 +177,16 @@ local function performShot(player, gun, muzzleOrigin, aimOrigin, aimDirection)
 			hitPosition = muzzleOrigin + trueDir * gun.Config.Range
 		end
 
-		-- Broadcast tracer to all clients (so others see the shot)
+	
 		fxRemote:FireAllClients("Tracer", muzzleOrigin, hitPosition, gun.Config.TracerColor)
 	end
 
-	-- Send hit result only to the shooter (for hitmarker + recoil data)
+
 	hitRemote:FireClient(player, hitTypeResult, isHeadshot, gun:GetRecoil())
 end
 
--- ── Remote handlers ───────────────────────────────────────────────────────────
 gunRemote.OnServerEvent:Connect(function(player, action, gunName, muzzleOrigin, aimOrigin, aimDirection, extraData)
-	-- Always validate inputs before doing anything
+
 	if type(gunName) ~= "string" then return end
 
 	if action == "Shoot" then
@@ -213,7 +205,6 @@ gunRemote.OnServerEvent:Connect(function(player, action, gunName, muzzleOrigin, 
 		local gun = getGun(player, gunName)
 		if not gun then return end
 		gun:Reload()
-		-- Tell the client when reload actually finishes so it can update the HUD
 		task.delay(gun.Config.ReloadTime, function()
 			if player and player.Parent then
 				hitRemote:FireClient(player, "ReloadDone", false, nil, gun.Ammo)
@@ -228,7 +219,6 @@ gunRemote.OnServerEvent:Connect(function(player, action, gunName, muzzleOrigin, 
 	end
 end)
 
--- ── Cleanup on leave ─────────────────────────────────────────────────────────
 Players.PlayerRemoving:Connect(function(player)
 	guns[player] = nil
 	shotLog[player] = nil
