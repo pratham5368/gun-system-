@@ -1,5 +1,4 @@
--- GunSystem/GunConfig.lua
--- All weapon stats live here. Add new guns by adding a new table entry.
+
 
 local GunConfig = {}
 
@@ -7,7 +6,7 @@ GunConfig.Guns = {
 	Pistol = {
 		Name        = "Pistol",
 		Damage      = 22,
-		HeadshotMult = 2.0,    -- headshots deal 2× damage
+		HeadshotMult = 2.0,    -- headhots deal 2× damage
 		MaxAmmo     = 12,
 		FireRate    = 0.25,
 		ReloadTime  = 1.5,
@@ -15,7 +14,7 @@ GunConfig.Guns = {
 		FalloffStart = 100,    -- damage starts dropping here (studs)
 		FalloffEnd   = 300,    -- damage at minimum beyond here
 		FalloffMin   = 0.4,    -- minimum damage multiplier at max range
-		Spread       = 0.5,    -- hip-fire spread in degrees
+		Spread       = 0.5,    -- hipire spread in degrees
 		ADSSpread    = 0.05,   -- ADS spread in degrees
 		RecoilUp     = 0.8,    -- camera kick per shot (degrees up)
 		RecoilSide   = 0.3,    -- random horizontal kick
